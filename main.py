@@ -46,6 +46,9 @@ class SubnetVisualizer:
         self.export_button = tk.Button(button_frame, text="Export to CSV", command=self.export_to_csv)
         self.export_button.pack(side=tk.LEFT, padx=5)
 
+        self.optimize_button = tk.Button(button_frame, text="Optimize Subnets", command=self.optimize_subnets)
+        self.optimize_button.pack(side=tk.LEFT, padx=5)
+
         # --- Canvas and Scrollbars ---
         self.canvas_frame = tk.Frame(master)
         self.canvas_frame.pack(pady=20, fill=tk.BOTH, expand=True)
@@ -134,21 +137,25 @@ class SubnetVisualizer:
 
         try:
             with open(filepath, "r") as csvfile:
-                reader = csv.DictReader(csvfile)
-
-                if not self.summary_entry.get():
-                    first_row = next(reader)
-                    first_subnet = ipaddress.ip_network(first_row["Subnet"], strict=False)
-                    summary_network = first_subnet.supernet(prefixlen_diff=1)
-
-                    self.summary_entry.insert(0, str(summary_network))
-                    csvfile.seek(0)
-                    next(reader)
+                reader = csv.reader(csvfile)
+                
+                # First row should be summary address
+                summary_row = next(reader)
+                if summary_row[0] == "Summary":
+                    self.summary_entry.delete(0, tk.END)
+                    self.summary_entry.insert(0, summary_row[1])
+                    self.update_summary_range()
+                
+                # Skip header row
+                next(reader)
+                
+                # Clear existing subnets
+                self.subnets = []
 
                 for row in reader:
-                    subnet = ipaddress.ip_network(row["Subnet"], strict=False)
+                    subnet = ipaddress.ip_network(row[1], strict=False)
                     self.subnets.append({
-                        'label': row["Label"],
+                        'label': row[0],
                         'network': subnet,
                         'rect_id': None,
                         'label_id': None
@@ -245,6 +252,9 @@ class SubnetVisualizer:
         try:
             with open("subnets.csv", "w", newline="") as csvfile:
                 writer = csv.writer(csvfile)
+                # Add summary address as first row
+                writer.writerow(["Summary", str(self.summary_entry.get())])
+                # Header for subnet data
                 writer.writerow(["Label", "Subnet", "Network Address", "Broadcast Address", "Number of Hosts"])
 
                 for subnet in self.subnets:
@@ -416,6 +426,38 @@ class SubnetVisualizer:
 
     def on_canvas_scroll(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def optimize_subnets(self):
+        if not self.subnets or not self.summary_entry.get():
+            messagebox.showwarning("Warning", "No subnets to optimize or no summary address set.")
+            return
+
+        try:
+            summary_network = ipaddress.ip_network(self.summary_entry.get(), strict=False)
+            
+            # Sort subnets by size (largest first)
+            self.subnets.sort(key=lambda x: x['network'].num_addresses, reverse=True)
+            
+            # Start placing from the lowest usable address
+            current_address = summary_network.network_address
+            
+            # Place each subnet consecutively without gaps
+            for subnet in self.subnets:
+                new_network = ipaddress.ip_network(f"{current_address}/{subnet['network'].prefixlen}", strict=False)
+                
+                if new_network.broadcast_address >= summary_network.broadcast_address:
+                    messagebox.showerror("Error", "Not enough space to optimize subnets")
+                    return
+                
+                subnet['network'] = new_network
+                current_address = new_network.broadcast_address + 1
+            
+            # Sort by network address to maintain visual order
+            self.subnets.sort(key=lambda x: x['network'].network_address)
+            self.visualize_subnets(summary_network)
+            
+        except Exception as e:
+            messagebox.showerror("Optimization Error", f"An error occurred: {e}")
 
 root = tk.Tk()
 app = SubnetVisualizer(root)
